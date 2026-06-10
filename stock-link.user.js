@@ -4,7 +4,7 @@
 
 // @namespace    http://tampermonkey.net/
 
-// @version      8.6
+// @version      8.6.1
 
 // @description  高效精准地高亮显示A股股票代码和名称 ，联动通达信、同花顺、东方财富、大智慧、指南针软件，它是一款能一键打通网页与本地股票软件的超级工具。
 
@@ -5534,6 +5534,11 @@
             }
         }
         areNodesAdjacent(node1, node2) {
+            // 不同表格单元格内的文本节点绝不能合并，防止跨 <td>/<th> 破坏表格结构
+            const cell = node1.parentNode?.closest?.('td, th');
+            if (cell && cell !== node2.parentNode?.closest?.('td, th')) {
+                return false;
+            }
             let sibling = node1.nextSibling;
             while (sibling) {
                 if (sibling === node2) return true;
