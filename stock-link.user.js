@@ -4,7 +4,7 @@
 
 // @namespace    http://tampermonkey.net/
 
-// @version      8.6.13
+// @version      8.7.0
 
 // @description  高效精准地高亮显示A股股票代码和名称 ，联动通达信、同花顺、东方财富、大智慧、指南针软件，它是一款能一键打通网页与本地股票软件的超级工具。
 // @changelog    [2026-06-11] 更新后共5494只股票，本次新增0只
@@ -18,7 +18,7 @@
 
 // @grant        GM_getValue
 
-// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 
 // @connect      localhost
 // @connect      127.0.0.1
@@ -5541,17 +5541,67 @@
     "颖泰生物": "920819",
 };
 
+    // --- 2.5 自定义股票数据持久化 ---
+    const CUSTOM_DATA_KEY = 'stockLinkCustomData';
+
+    function loadCustomData() {
+        try {
+            const raw = GM_getValue(CUSTOM_DATA_KEY, null);
+            if (raw) {
+                const d = JSON.parse(raw);
+                return {
+                    additions: d.additions || {},
+                    modifications: d.modifications || {},
+                    deletions: d.deletions || {}
+                };
+            }
+        } catch (e) { /* ignore */ }
+        return { additions: {}, modifications: {}, deletions: {} };
+    }
+
+    function saveCustomData(data) {
+        GM_setValue(CUSTOM_DATA_KEY, JSON.stringify(data));
+    }
+
+    function buildRuntimeDict() {
+        const custom = loadCustomData();
+        const dict = {};
+        for (const [name, code] of Object.entries(stockNameToCode)) {
+            if (!(name in custom.deletions)) dict[name] = code;
+        }
+        for (const [name, code] of Object.entries(custom.modifications)) {
+            dict[name] = code;
+        }
+        for (const [name, code] of Object.entries(custom.additions)) {
+            dict[name] = code;
+        }
+        return dict;
+    }
+
+    let runtimeStockDict = buildRuntimeDict();
+
     // --- 3. 核心高亮逻辑 (带详细注释) ---
 
     // 正则表达式定义
     const stockCodeRegex = /\b(00[0-9]{4}|30[0-9]{4}|60[0-9]{4}|68[0-9]{4})\b/g;
-    const stockNames = Object.keys(stockNameToCode);
-    const escapedStockNames = stockNames.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const stockNameRegex = new RegExp(`(${escapedStockNames.join('|')})`, 'g');
-    const combinedRegex = new RegExp(`${stockCodeRegex.source}|${stockNameRegex.source}`, 'g');
+
+    function buildStockNameRegex(dict) {
+        const stockNames = Object.keys(dict);
+        const escapedStockNames = stockNames.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+        return new RegExp(`(${escapedStockNames.join('|')})`, 'g');
+    }
+
+    function rebuildAllRegexes(dict) {
+        const snr = buildStockNameRegex(dict);
+        window._stockNameRegex = snr;
+        window._combinedRegex = new RegExp(`${stockCodeRegex.source}|${snr.source}`, 'g');
+    }
+
+    window._stockNameRegex = buildStockNameRegex(runtimeStockDict);
+    window._combinedRegex = new RegExp(`${stockCodeRegex.source}|${window._stockNameRegex.source}`, 'g');
 
     // 性能优化：存储已处理节点
-    const processedNodes = new WeakSet();
+    let processedNodes = new WeakSet();
 
     // ContextualWalker 类的定义 (保持不变)
     const BLOCK_TAGS = new Set([
@@ -5678,7 +5728,7 @@
                 const range = document.createRange();
                 range.setStart(startNode, startOffset);
                 range.setEnd(endNode, endOffset);
-                const stockCode = stockNameToCode[matchText] || (stockCodeRegex.test(matchText) ? matchText : null);
+                const stockCode = runtimeStockDict[matchText] || (stockCodeRegex.test(matchText) ? matchText : null);
                 if (stockCode) {
                     if (range.cloneContents().querySelector('.stock-highlight')) {
                         continue;
@@ -5736,8 +5786,7 @@
 
     // 统一的高亮扫描入口函数
     const triggerHighlight = debounce(() => {
-        // console.log("Debounced scan triggered"); // 调试时可开启
-        new ContextualWalker(document.body, combinedRegex, applyHighlight);
+        new ContextualWalker(document.body, window._combinedRegex, applyHighlight);
     }, 500); // 500毫秒的防抖延迟，可以根据需要调整
 
     // 方案A: 响应式高亮 - MutationObserver
@@ -5759,7 +5808,277 @@
         triggerHighlight();
     }, 2000); // 每2秒触发一次
 
-    // --- 6. 初始执行 ---
+    // --- 6. 股票清单管理 ---
+    let _dictDirty = false;
+
+    function markDictDirty() {
+        _dictDirty = true;
+        // 页面刷新后对应用户可见，避免"改了但没高亮"的困惑
+        if (confirm('股票清单已更新。需要刷新页面使修改立即生效。\n\n点击"确定"立即刷新，或"取消"稍后手动刷新。')) {
+            location.reload();
+        }
+    }
+
+    function saveAndApply(data) {
+        saveCustomData(data);
+        runtimeStockDict = buildRuntimeDict();
+        rebuildAllRegexes(runtimeStockDict);
+        processedNodes = new WeakSet();
+        new ContextualWalker(document.body, window._combinedRegex, applyHighlight);
+    }
+
+    function showStockManager() {
+        const existing = document.getElementById('stock-manager-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'stock-manager-overlay';
+        overlay.style.cssText = 'position:fixed;z-index:2147483647;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = 'background:#1e1e2e;color:#cdd6f4;border-radius:12px;padding:24px;width:520px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.5);';
+
+        // tab bar
+        const tabs = document.createElement('div');
+        tabs.style.cssText = 'display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid #313244;padding-bottom:0;';
+
+        const panels = {};
+        function makeTab(label) {
+            const btn = document.createElement('button');
+            btn.textContent = label;
+            btn.dataset.tab = label;
+            btn.style.cssText = 'padding:8px 16px;border:none;background:transparent;color:#a6adc8;cursor:pointer;font-size:14px;border-radius:8px 8px 0 0;transition:all 0.2s;';
+            btn.addEventListener('click', () => {
+                tabs.querySelectorAll('button').forEach(b => { b.style.background = 'transparent'; b.style.color = '#a6adc8'; });
+                btn.style.background = '#313244';
+                btn.style.color = '#cdd6f4';
+                for (const k of Object.keys(panels)) {
+                    panels[k].style.display = k === label ? '' : 'none';
+                }
+            });
+            return btn;
+        }
+
+        // ---------- Add panel ----------
+        const addPanel = document.createElement('div');
+        panels['新增'] = addPanel;
+        addPanel.innerHTML = `
+            <label style="font-size:13px;color:#a6adc8;display:block;margin-bottom:6px;">股票名称</label>
+            <input id="sm-add-name" placeholder="例如: 嘉德利" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;border:1px solid #45475a;border-radius:8px;background:#313244;color:#cdd6f4;font-size:14px;outline:none;">
+            <label style="font-size:13px;color:#a6adc8;display:block;margin-bottom:6px;">股票代码 (6位数字)</label>
+            <input id="sm-add-code" placeholder="例如: 603435" maxlength="6" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;border:1px solid #45475a;border-radius:8px;background:#313244;color:#cdd6f4;font-size:14px;outline:none;">
+            <button id="sm-add-btn" style="width:100%;padding:10px;border:none;border-radius:8px;background:#a6e3a1;color:#1e1e2e;font-size:14px;font-weight:600;cursor:pointer;">添加股票</button>
+            <div id="sm-add-msg" style="margin-top:10px;font-size:13px;min-height:20px;"></div>
+        `;
+
+        // ---------- Modify panel ----------
+        const modPanel = document.createElement('div');
+        modPanel.style.display = 'none';
+        panels['修改'] = modPanel;
+        modPanel.innerHTML = `
+            <label style="font-size:13px;color:#a6adc8;display:block;margin-bottom:6px;">输入名称或代码查找</label>
+            <input id="sm-mod-search" placeholder="输入要修改的股票名称或代码" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;border:1px solid #45475a;border-radius:8px;background:#313244;color:#cdd6f4;font-size:14px;outline:none;">
+            <button id="sm-mod-search-btn" style="width:100%;padding:10px;border:none;border-radius:8px;background:#89b4fa;color:#1e1e2e;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:12px;">查找</button>
+            <div id="sm-mod-result" style="display:none;margin-bottom:12px;padding:12px;background:#313244;border-radius:8px;font-size:14px;">
+                <div style="margin-bottom:6px;">当前: <strong id="sm-mod-old-name" style="color:#f9e2af;"></strong> → <code id="sm-mod-old-code" style="color:#f9e2af;"></code></div>
+                <label style="font-size:12px;color:#a6adc8;display:block;margin-top:8px;margin-bottom:4px;">新名称 (留空不修改)</label>
+                <input id="sm-mod-new-name" placeholder="新名称" style="width:100%;box-sizing:border-box;padding:8px 10px;margin-bottom:8px;border:1px solid #45475a;border-radius:6px;background:#1e1e2e;color:#cdd6f4;font-size:13px;outline:none;">
+                <label style="font-size:12px;color:#a6adc8;display:block;margin-bottom:4px;">新代码 (留空不修改)</label>
+                <input id="sm-mod-new-code" placeholder="新6位代码" maxlength="6" style="width:100%;box-sizing:border-box;padding:8px 10px;margin-bottom:10px;border:1px solid #45475a;border-radius:6px;background:#1e1e2e;color:#cdd6f4;font-size:13px;outline:none;">
+                <button id="sm-mod-apply-btn" style="width:100%;padding:8px;border:none;border-radius:6px;background:#f9e2af;color:#1e1e2e;font-size:13px;font-weight:600;cursor:pointer;">应用修改</button>
+            </div>
+            <div id="sm-mod-msg" style="font-size:13px;min-height:20px;"></div>
+        `;
+
+        // ---------- Delete panel ----------
+        const delPanel = document.createElement('div');
+        delPanel.style.display = 'none';
+        panels['删除'] = delPanel;
+        delPanel.innerHTML = `
+            <label style="font-size:13px;color:#a6adc8;display:block;margin-bottom:6px;">输入名称或代码查找</label>
+            <input id="sm-del-search" placeholder="输入要删除的股票名称或代码" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;border:1px solid #45475a;border-radius:8px;background:#313244;color:#cdd6f4;font-size:14px;outline:none;">
+            <button id="sm-del-search-btn" style="width:100%;padding:10px;border:none;border-radius:8px;background:#f38ba8;color:#1e1e2e;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:12px;">查找</button>
+            <div id="sm-del-result" style="display:none;margin-bottom:12px;padding:12px;background:#313244;border-radius:8px;font-size:14px;">
+                <div style="margin-bottom:8px;">找到: <strong id="sm-del-name" style="color:#f38ba8;"></strong> → <code id="sm-del-code" style="color:#f38ba8;"></code></div>
+                <button id="sm-del-confirm-btn" style="width:100%;padding:8px;border:none;border-radius:6px;background:#f38ba8;color:#1e1e2e;font-size:13px;font-weight:600;cursor:pointer;">确认删除</button>
+            </div>
+            <div id="sm-del-msg" style="font-size:13px;min-height:20px;"></div>
+        `;
+
+        tabs.appendChild(makeTab('新增'));
+        tabs.appendChild(makeTab('修改'));
+        tabs.appendChild(makeTab('删除'));
+        tabs.firstChild.click();  // 默认选中"新增"
+
+        dialog.appendChild(tabs);
+        dialog.appendChild(addPanel);
+        dialog.appendChild(modPanel);
+        dialog.appendChild(delPanel);
+
+        // close button
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '关闭';
+        closeBtn.style.cssText = 'margin-top:20px;width:100%;padding:10px;border:1px solid #45475a;border-radius:8px;background:transparent;color:#a6adc8;cursor:pointer;font-size:14px;transition:all 0.2s;';
+        closeBtn.addEventListener('mouseenter', () => { closeBtn.style.background = '#45475a'; });
+        closeBtn.addEventListener('mouseleave', () => { closeBtn.style.background = 'transparent'; });
+        closeBtn.addEventListener('click', () => overlay.remove());
+        dialog.appendChild(closeBtn);
+
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        // ---- Event bindings ----
+
+        // Add
+        dialog.querySelector('#sm-add-btn').addEventListener('click', () => {
+            const name = dialog.querySelector('#sm-add-name').value.trim();
+            const code = dialog.querySelector('#sm-add-code').value.trim();
+            const msg = dialog.querySelector('#sm-add-msg');
+            msg.style.color = '#f38ba8';
+            if (!name || name.length < 2) { msg.textContent = '请输入至少两个字的股票名称'; return; }
+            if (!/^\d{6}$/.test(code)) { msg.textContent = '请输入6位数字代码'; return; }
+            const data = loadCustomData();
+            // 检查是否已存在
+            const existingName = Object.keys(runtimeStockDict).find(k => k === name);
+            const existingCode = Object.values(runtimeStockDict).find(c => c === code);
+            if (existingName || existingCode) {
+                msg.textContent = existingName ? `"${name}" 已在清单中` : `代码 "${code}" 已在清单中`;
+                return;
+            }
+            data.additions[name] = code;
+            saveAndApply(data);
+            msg.style.color = '#a6e3a1';
+            msg.textContent = `已添加: ${name} → ${code}`;
+            markDictDirty();
+        });
+
+        // Modify search
+        function findInDict(query) {
+            const q = query.trim().toLowerCase();
+            if (!q) return null;
+            if (/^\d{6}$/.test(q)) {
+                const entry = Object.entries(runtimeStockDict).find(([, c]) => c === q);
+                return entry ? { name: entry[0], code: entry[1] } : null;
+            }
+            for (const [name, code] of Object.entries(runtimeStockDict)) {
+                if (name === q || name.toLowerCase() === q) return { name, code };
+            }
+            return null;
+        }
+
+        dialog.querySelector('#sm-mod-search-btn').addEventListener('click', () => {
+            const raw = dialog.querySelector('#sm-mod-search').value;
+            const found = findInDict(raw);
+            const resultDiv = dialog.querySelector('#sm-mod-result');
+            const msg = dialog.querySelector('#sm-mod-msg');
+            msg.textContent = '';
+            if (!found) {
+                resultDiv.style.display = 'none';
+                msg.style.color = '#f38ba8';
+                msg.textContent = '未找到匹配的股票';
+                return;
+            }
+            resultDiv.style.display = '';
+            dialog.querySelector('#sm-mod-old-name').textContent = found.name;
+            dialog.querySelector('#sm-mod-old-code').textContent = found.code;
+            dialog.querySelector('#sm-mod-new-name').value = '';
+            dialog.querySelector('#sm-mod-new-code').value = '';
+            resultDiv._found = found;
+        });
+
+        dialog.querySelector('#sm-mod-apply-btn').addEventListener('click', () => {
+            const resultDiv = dialog.querySelector('#sm-mod-result');
+            const found = resultDiv._found;
+            if (!found) return;
+            const newName = dialog.querySelector('#sm-mod-new-name').value.trim();
+            const newCode = dialog.querySelector('#sm-mod-new-code').value.trim();
+            const msg = dialog.querySelector('#sm-mod-msg');
+            msg.style.color = '#f38ba8';
+            if (!newName && !newCode) { msg.textContent = '请填写新名称或新代码'; return; }
+            if (newCode && !/^\d{6}$/.test(newCode)) { msg.textContent = '新代码必须是6位数字'; return; }
+            if (newName && newName.length < 2) { msg.textContent = '新名称至少两个字符'; return; }
+            const data = loadCustomData();
+            // 处理 modifications —— 以"名称查找"的结果为锚点
+            const effectiveName = newName || found.name;
+            const effectiveCode = newCode || found.code;
+            // 如果原条目来自 additions，直接更新 additions
+            if (found.name in data.additions) {
+                delete data.additions[found.name];
+                data.additions[effectiveName] = effectiveCode;
+            } else {
+                data.modifications[effectiveName] = effectiveCode;
+            }
+            saveAndApply(data);
+            msg.style.color = '#a6e3a1';
+            msg.textContent = `已修改: ${effectiveName} → ${effectiveCode}`;
+            dialog.querySelector('#sm-mod-result').style.display = 'none';
+            markDictDirty();
+        });
+
+        // Delete search
+        dialog.querySelector('#sm-del-search-btn').addEventListener('click', () => {
+            const raw = dialog.querySelector('#sm-del-search').value;
+            const found = findInDict(raw);
+            const resultDiv = dialog.querySelector('#sm-del-result');
+            const msg = dialog.querySelector('#sm-del-msg');
+            msg.textContent = '';
+            if (!found) {
+                resultDiv.style.display = 'none';
+                msg.style.color = '#f38ba8';
+                msg.textContent = '未找到匹配的股票';
+                return;
+            }
+            resultDiv.style.display = '';
+            dialog.querySelector('#sm-del-name').textContent = found.name;
+            dialog.querySelector('#sm-del-code').textContent = found.code;
+            resultDiv._found = found;
+        });
+
+        dialog.querySelector('#sm-del-confirm-btn').addEventListener('click', () => {
+            const resultDiv = dialog.querySelector('#sm-del-result');
+            const found = resultDiv._found;
+            if (!found) return;
+            const msg = dialog.querySelector('#sm-del-msg');
+            const data = loadCustomData();
+            // 如果它在 additions 里，直接移除 add
+            if (found.name in data.additions) {
+                delete data.additions[found.name];
+            } else if (found.name in data.modifications) {
+                delete data.modifications[found.name];
+            }
+            // 对于内置条目，标记为删除
+            if (found.name in stockNameToCode) {
+                data.deletions[found.name] = true;
+            }
+            saveAndApply(data);
+            msg.style.color = '#a6e3a1';
+            msg.textContent = `已删除: ${found.name} → ${found.code}`;
+            dialog.querySelector('#sm-del-result').style.display = 'none';
+            markDictDirty();
+        });
+
+        // Enter key support
+        dialog.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') { overlay.remove(); return; }
+                if (e.key === 'Enter') {
+                    const addBtn = dialog.querySelector('#sm-add-btn');
+                    const modSearchBtn = dialog.querySelector('#sm-mod-search-btn');
+                    const modApplyBtn = dialog.querySelector('#sm-mod-apply-btn');
+                    const delSearchBtn = dialog.querySelector('#sm-del-search-btn');
+                    const delConfirmBtn = dialog.querySelector('#sm-del-confirm-btn');
+                    if (addPanel.style.display !== 'none') addBtn.click();
+                    else if (modPanel.style.display !== 'none' && !dialog.querySelector('#sm-mod-result').style.display) modSearchBtn.click();
+                    else if (modPanel.style.display !== 'none') modApplyBtn.click();
+                    else if (delPanel.style.display !== 'none' && !dialog.querySelector('#sm-del-result').style.display) delSearchBtn.click();
+                    else if (delPanel.style.display !== 'none') delConfirmBtn.click();
+                }
+            });
+        });
+    }
+
+    GM_registerMenuCommand('⚙ 股票清单管理', showStockManager);
     // 页面加载完成后，也调用统一的入口函数来执行首次扫描
     window.addEventListener('load', () => {
         setTimeout(triggerHighlight, 1000);
