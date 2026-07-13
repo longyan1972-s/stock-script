@@ -4,10 +4,10 @@
 
 // @namespace    http://tampermonkey.net/
 
-// @version      8.7.33
+// @version      8.7.34
 
 // @description  高效精准地高亮显示A股股票代码和名称 ，联动通达信、同花顺、东方财富、大智慧、指南针软件，它是一款能一键打通网页与本地股票软件的超级工具。
-// @changelog    [2026-07-12] 更新后共5498只股票，本次新增0只
+// @changelog    [2026-07-13] 更新后共5498只股票，本次新增0只
 // @author       Bruce 微信: 370589873
 
 // @match        *://*/*
@@ -5757,7 +5757,7 @@
         console.log(`发送代码 ${stockCode} 到本地服务进行广播...`);
         GM_xmlhttpRequest({
             method: "POST",
-            url: "http://127.0.0.1:3000/api/link",
+            url: "http://127.0.0.1:5678/api/link",
             data: JSON.stringify({ code: stockCode, target: "session" } ),
             headers: { "Content-Type": "application/json" },
             onload: (response) => console.log("联动广播请求成功发送。", JSON.parse(response.responseText)),
