@@ -4,7 +4,7 @@
 
 // @namespace    http://tampermonkey.net/
 
-// @version      8.7.47
+// @version      8.7.48
 
 // @description  高效精准地高亮显示A股股票代码和名称 ，联动通达信、同花顺、东方财富、大智慧、指南针软件，它是一款能一键打通网页与本地股票软件的超级工具。
 // @changelog    [2026-07-26] 更新后共5499只股票，本次新增0只
@@ -34,7 +34,7 @@
     // --- 1. 样式定义 ---
     GM_addStyle(`
         .stock-highlight {
-            color: red !important;
+            color: orange !important;
             font-weight: bold !important;
             cursor: pointer !important;
         }
@@ -5734,7 +5734,7 @@
                 const range = document.createRange();
                 range.setStart(startNode, startOffset);
                 range.setEnd(endNode, endOffset);
-                const stockCode = runtimeStockDict[matchText] || (stockCodeRegex.test(matchText) ? matchText : null);
+                const stockCode = runtimeStockDict[matchText];
                 if (stockCode) {
                     if (range.cloneContents().querySelector('.stock-highlight')) {
                         continue;
