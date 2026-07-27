@@ -7,7 +7,7 @@
 // @version      8.7.48
 
 // @description  高效精准地高亮显示A股股票代码和名称 ，联动通达信、同花顺、东方财富、大智慧、指南针软件，它是一款能一键打通网页与本地股票软件的超级工具。
-// @changelog    [2026-07-26] 更新后共5499只股票，本次新增0只
+// @changelog    [2026-07-27] 更新后共5500只股票，本次新增1只
 // @author       Bruce 微信: 370589873
 
 // @match        *://*/*
@@ -34,7 +34,7 @@
     // --- 1. 样式定义 ---
     GM_addStyle(`
         .stock-highlight {
-            color: orange !important;
+            color: red !important;
             font-weight: bold !important;
             cursor: pointer !important;
         }
@@ -5284,6 +5284,7 @@
     "电科蓝天": "688818",
     "天能股份": "688819",
     "盛合晶微": "688820",
+    "长鑫科技": "688825",
     "中芯国际": "688981",
     "九号公司": "689009",
     "武汉蓝电": "830779",
@@ -5734,7 +5735,7 @@
                 const range = document.createRange();
                 range.setStart(startNode, startOffset);
                 range.setEnd(endNode, endOffset);
-                const stockCode = runtimeStockDict[matchText];
+                const stockCode = runtimeStockDict[matchText] || (stockCodeRegex.test(matchText) ? matchText : null);
                 if (stockCode) {
                     if (range.cloneContents().querySelector('.stock-highlight')) {
                         continue;
